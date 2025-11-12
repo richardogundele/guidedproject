@@ -1,0 +1,234 @@
+trigger:
+  branches:
+    include:
+      - main
+
+pr:
+  branches:
+    include:
+      - '*'
+
+variables:
+  azureServiceConnection: 'RICHARDOGUNDELE'
+  tfWorkingDir: 'terraform'
+  terraformVersion: '1.5.6'
+  tfBackendMode: 'bootstrap'
+  tfBackendResourceGroup: 'rg-devops-3tier'
+  tfBackendLocation: 'eastus'
+  tfBackendStorageAccount: 'devops-storage0-acc'
+  tfBackendContainer: 'tfstate'
+  tfBackendKey: 'terraform.tfstate'
+  frontendDir: 'src/frontend'
+  backendDir: 'src/backend'
+  siteBuildOutput: ''
+  frontendAppName: 'devops-3tier-frontend-7grzs'
+  backendAppName: 'devops-3tier-backend-7grzs'
+  appResourceGroup: 'rg-devops-3tier'
+  runTerraformApply: 'true'
+  nodeVersion: '18.x'
+
+stages:
+
+- stage: TerraformPlan
+  displayName: 'Terraform: Validate, Bootstrap Backend (optional) & Plan'
+  jobs:
+  - job: Plan
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - checkout: self
+    - script: |
+        set -e
+        if ! command -v terraform >/dev/null 2>&1; then
+          TV=${TERRAFORM_VERSION:-$(terraformVersion)}
+          wget https://releases.hashicorp.com/terraform/${TV}/terraform_${TV}_linux_amd64.zip -O /tmp/terraform.zip
+          sudo apt-get update && sudo apt-get install -y unzip
+          unzip /tmp/terraform.zip -d /tmp && sudo mv /tmp/terraform /usr/local/bin/
+        fi
+      displayName: 'Install Terraform'
+      env:
+        TERRAFORM_VERSION: $(terraformVersion)
+
+    - task: AzureCLI@2
+      displayName: 'Optional: Bootstrap TF backend (storage account + container)'
+      condition: eq(variables['tfBackendMode'], 'bootstrap')
+      inputs:
+        azureSubscription: '$(azureServiceConnection)'
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          set -e
+          RG=$(tfBackendResourceGroup)
+          LOC=$(tfBackendLocation)
+          SA=$(tfBackendStorageAccount)
+          CON=$(tfBackendContainer)
+          az group create -n "$RG" -l "$LOC"
+          nameAvailable=$(az storage account check-name -n $SA --query "nameAvailable" -o tsv)
+          if [ "$nameAvailable" = "true" ]; then
+            az storage account create -n $SA -g $RG -l $LOC --sku Standard_LRS --kind StorageV2
+          fi
+          KEY=$(az storage account keys list -g $RG -n $SA --query "[0].value" -o tsv)
+          az storage container create --name $CON --account-name $SA --account-key $KEY || true
+          echo "Backend bootstrap complete."
+
+    - task: AzureCLI@2
+      displayName: 'Terraform init, fmt, validate, plan'
+      inputs:
+        azureSubscription: '$(azureServiceConnection)'
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          set -e
+          cd $(tfWorkingDir)
+
+          if [ "$(tfBackendMode)" = "bootstrap" ] || [ "$(tfBackendMode)" = "existing" ]; then
+            terraform init -backend-config="storage_account_name=$(tfBackendStorageAccount)" -backend-config="container_name=$(tfBackendContainer)" -backend-config="key=$(tfBackendKey)"
+          else
+            terraform init
+          fi
+
+          terraform fmt -check -recursive || (echo "Run terraform fmt"; exit 1)
+          terraform validate
+          terraform plan -out=tfplan.binary
+          terraform show -no-color -json tfplan.binary > tfplan.json
+    - publish: $(Pipeline.Workspace)/$(tfWorkingDir)/tfplan.json
+      artifact: terraform-plan
+    - publish: $(Pipeline.Workspace)/$(tfWorkingDir)/tfplan.binary
+      artifact: terraform-plan-binary
+
+- stage: TerraformApply
+  displayName: 'Terraform: Apply (main only, guarded)'
+  dependsOn: TerraformPlan
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'), eq(variables['runTerraformApply'], 'true'))
+  jobs:
+  - deployment: Apply
+    environment: 'terraform-apply'
+    pool:
+      vmImage: ubuntu-latest
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - download: current
+            artifact: terraform-plan-binary
+            patterns: '**/tfplan.binary'
+
+          - task: AzureCLI@2
+            displayName: 'Guard: ensure remote state exists in backend before apply'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -e
+                RG=$(tfBackendResourceGroup)
+                SA=$(tfBackendStorageAccount)
+                CON=$(tfBackendContainer)
+                KEY_NAME=$(tfBackendKey)
+
+                # get storage account key
+                ACCOUNT_KEY=$(az storage account keys list -g "$RG" -n "$SA" --query "[0].value" -o tsv) || true
+                if [ -z "$ACCOUNT_KEY" ]; then
+                  echo "Unable to retrieve storage account key for $SA in $RG. Ensure the service connection has access."; exit 1
+                fi
+
+                exists=$(az storage blob exists --account-name "$SA" --account-key "$ACCOUNT_KEY" --container-name "$CON" --name "$KEY_NAME" --query exists -o tsv) || true
+                if [ "$exists" != "true" ]; then
+                  echo "Remote Terraform state not found in backend: $SA/$CON/$KEY_NAME"
+                  echo "To import your local state into the new backend, run locally from your terraform working directory:"
+                  echo "  terraform init -backend-config=\"storage_account_name=$SA\" -backend-config=\"container_name=$CON\" -backend-config=\"key=$KEY_NAME\" -migrate-state"
+                  echo "After migrating the state, re-run this pipeline."
+                  exit 1
+                fi
+                echo "Remote state $SA/$CON/$KEY_NAME found — safe to apply."
+
+          - script: |
+              set -e
+              if ! command -v terraform >/dev/null 2>&1; then
+                TV=${TERRAFORM_VERSION:-$(terraformVersion)}
+                wget https://releases.hashicorp.com/terraform/${TV}/terraform_${TV}_linux_amd64.zip -O /tmp/terraform.zip
+                sudo apt-get update && sudo apt-get install -y unzip
+                unzip /tmp/terraform.zip -d /tmp && sudo mv /tmp/terraform /usr/local/bin/
+              fi
+            displayName: 'Ensure Terraform'
+            env:
+              TERRAFORM_VERSION: $(terraformVersion)
+
+          - task: AzureCLI@2
+            displayName: 'Terraform apply using plan'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -e
+                cd $(tfWorkingDir)
+                terraform init -backend-config="storage_account_name=$(tfBackendStorageAccount)" -backend-config="container_name=$(tfBackendContainer)" -backend-config="key=$(tfBackendKey)" -reconfigure
+                terraform apply -auto-approve tfplan.binary
+
+- stage: BuildAndDeploy
+  displayName: 'Build frontend & backend and deploy to App Services'
+  dependsOn: TerraformApply
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  jobs:
+  - job: BuildDeploy
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - checkout: self
+
+    - task: NodeTool@0
+      inputs:
+        versionSpec: '$(nodeVersion)'
+      displayName: 'Install Node'
+
+    - script: |
+        set -e
+        cd $(backendDir)
+        if [ -f package.json ]; then
+          npm ci
+          npm run build || true
+        fi
+      displayName: 'Build backend (if needed)'
+
+    - script: |
+        set -e
+        cd $(frontendDir)
+        if [ -f package.json ]; then
+          npm ci
+          npm run build
+        fi
+      displayName: 'Build frontend (if needed)'
+
+    - task: ArchiveFiles@2
+      inputs:
+        rootFolderOrFile: '$(backendDir)'
+        includeRootFolder: false
+        archiveType: 'zip'
+        archiveFile: '$(Build.ArtifactStagingDirectory)/backend-drop.zip'
+        replaceExistingArchive: true
+      displayName: 'Zip backend artifact'
+
+    - task: ArchiveFiles@2
+      inputs:
+        rootFolderOrFile: $[ eq(variables['siteBuildOutput'], '') ? variables['frontendDir'] : format('{0}/{1}', variables['frontendDir'], variables['siteBuildOutput']) ]
+        includeRootFolder: false
+        archiveType: 'zip'
+        archiveFile: '$(Build.ArtifactStagingDirectory)/frontend-drop.zip'
+        replaceExistingArchive: true
+      displayName: 'Zip frontend artifact'
+
+    - task: AzureWebApp@1
+      displayName: 'Deploy backend to App Service (zip deploy)'
+      inputs:
+        azureSubscription: '$(azureServiceConnection)'
+        appName: '$(backendAppName)'
+        package: '$(Build.ArtifactStagingDirectory)/backend-drop.zip'
+
+    - task: AzureWebApp@1
+      displayName: 'Deploy frontend to App Service (zip deploy)'
+      inputs:
+        azureSubscription: '$(azureServiceConnection)'
+        appType: 'webApp'
+        appName: '$(frontendAppName)'
+        package: '$(Build.ArtifactStagingDirectory)/frontend-drop.zip'
