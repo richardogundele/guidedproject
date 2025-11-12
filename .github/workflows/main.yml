@@ -1,30 +1,88 @@
-  - name: Setup Node.js
-    uses: actions/setup-node@v3
-    with:
-      node-version: '16'
+name: CI/CD Deploy Pipeline
 
-  - name: Install backend dependencies
-    working-directory: src/backend
-    run: npm ci
+on:
+  push:
+    branches:
+      - main
 
-  - name: Package backend
-    run: |
-      # create a zip of src/backend (exclude node_modules)
-      zip -r backend.zip src/backend -x "src/backend/node_modules/*"
+jobs:
+  build:
+    name: Build and Package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-  - name: Package frontend
-    run: |
-      # create a zip of src/frontend (exclude node_modules if any)
-      zip -r frontend.zip src/frontend -x "src/frontend/node_modules/*"
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '16'
 
-  - name: Upload backend artifact
-    uses: actions/upload-artifact@v4
-    with:
-      name: backend-package
-      path: backend.zip
+      - name: Install backend dependencies
+        working-directory: src/backend
+        run: npm ci
 
-  - name: Upload frontend artifact
-    uses: actions/upload-artifact@v4
-    with:
-      name: frontend-package
-      path: frontend.zip
+      - name: Package backend
+        run: |
+          # create a zip of src/backend (exclude node_modules)
+          zip -r backend.zip src/backend -x "src/backend/node_modules/*"
+
+      - name: Package frontend
+        run: |
+          # create a zip of src/frontend (exclude node_modules if any)
+          zip -r frontend.zip src/frontend -x "src/frontend/node_modules/*"
+
+      - name: Upload backend artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-package
+          path: backend.zip
+
+      - name: Upload frontend artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-package
+          path: frontend.zip
+
+  deploy-backend:
+    name: Deploy Backend API
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download backend artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-package
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Deploy to Azure Web App (Backend)
+        uses: azure/webapps-deploy@v2
+        with:
+          app-name: devops-3tier-backend-7grzs
+          package: backend-package/backend.zip
+          startup-command: 'npm start'
+
+  deploy-frontend:
+    name: Deploy Frontend Web App
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download frontend artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-package
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Deploy to Azure Web App (Frontend)
+        uses: azure/webapps-deploy@v2
+        with:
+          app-name: devops-3tier-frontend-7grzs
+          package: frontend-package/frontend.zip
