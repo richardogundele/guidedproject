@@ -211,7 +211,7 @@ stages:
 
     - task: ArchiveFiles@2
       inputs:
-        rootFolderOrFile: $[ eq(variables['siteBuildOutput'], '') ? variables['frontendDir'] : format('{0}/{1}', variables['frontendDir'], variables['siteBuildOutput']) ]
+        rootFolderOrFile: "$[ eq(variables['siteBuildOutput'], '') ? variables['frontendDir'] : format('{0}/{1}', variables['frontendDir'], variables['siteBuildOutput']) ]"
         includeRootFolder: false
         archiveType: 'zip'
         archiveFile: '$(Build.ArtifactStagingDirectory)/frontend-drop.zip'
