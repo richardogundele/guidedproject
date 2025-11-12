@@ -1,0 +1,30 @@
+  - name: Setup Node.js
+    uses: actions/setup-node@v3
+    with:
+      node-version: '16'
+
+  - name: Install backend dependencies
+    working-directory: src/backend
+    run: npm ci
+
+  - name: Package backend
+    run: |
+      # create a zip of src/backend (exclude node_modules)
+      zip -r backend.zip src/backend -x "src/backend/node_modules/*"
+
+  - name: Package frontend
+    run: |
+      # create a zip of src/frontend (exclude node_modules if any)
+      zip -r frontend.zip src/frontend -x "src/frontend/node_modules/*"
+
+  - name: Upload backend artifact
+    uses: actions/upload-artifact@v4
+    with:
+      name: backend-package
+      path: backend.zip
+
+  - name: Upload frontend artifact
+    uses: actions/upload-artifact@v4
+    with:
+      name: frontend-package
+      path: frontend.zip
