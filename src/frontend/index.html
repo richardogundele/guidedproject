@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Richard - 3-Tier App: Web Tier</title>
+        <style>
+            body { font-family: sans-serif; text-align: center; margin-top: 50px; background-color: #e6f7ff; }
+            .container { padding: 20px; border: 1px solid #0056b3; border-radius: 8px; max-width: 600px; margin: 0 auto; background-color: white; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+            h1 { color: #0056b3; }
+            .status { margin-top: 20px; padding: 10px; border-radius: 4px; font-weight: bold; }
+            .success { background-color: #d4edda; color: #155724; }
+            .error { background-color: #f8d7da; color: #721c24; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Web Tier (Frontend)</h1>
+            <p>Status: Running successfully on Azure App Service.</p>
+            <button onclick="callBackend()">Test API Connection</button>
+            <div id="api-status" class="status">Click button to check backend API...</div>
+        </div>
+        <script>
+            // NOTE: Replace YOUR_BACKEND_APP_URL with the actual URL of your API App Service
+            const BACKEND_URL = "https://YOUR_BACKEND_APP_URL.azurewebsites.net/api/status"; 
+
+            async function callBackend() {
+                const statusDiv = document.getElementById('api-status');
+                statusDiv.className = 'status';
+                statusDiv.textContent = 'Calling backend API...';
+
+                try {
+                    const response = await fetch(BACKEND_URL);
+                    const data = await response.json();
+
+                    if (response.ok) {
+                        statusDiv.className = 'status success';
+                        statusDiv.textContent = `✅ Backend Connected! Message: "${data.message}" | IP: ${data.source_ip}`;
+                    } else {
+                        throw new Error(data.message || 'Failed to connect.');
+                    }
+                } catch (error) {
+                    statusDiv.className = 'status error';
+                    statusDiv.textContent = `❌ API Connection FAILED. Check VNet/NSG rules. Error: ${error.message}`;
+                }
+            }
+        </script>
+    </body>
+    </html>

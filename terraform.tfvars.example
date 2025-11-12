@@ -1,0 +1,25 @@
+# Terraform Configuration File
+# Copy as terraform.tfvars and customize as needed
+
+# Resource naming prefix
+prefix = "3tier"
+
+# Azure region
+location = "East US"
+
+# Your resource group name
+resource_group_name = "1-1830d3a8-playground-sandbox"
+
+# App Service SKU
+# Development: B1, B2, B3
+# Production: S1, S2, S3, P1V2, P2V2, P3V2
+app_service_sku = "B2"
+
+# Network configuration (usually no changes needed)
+vnet_cidr = ["10.0.0.0/16"]
+
+subnet_cidrs = {
+  web = "10.0.1.0/24"
+  app = "10.0.2.0/24"
+  db  = "10.0.3.0/24"
+}
